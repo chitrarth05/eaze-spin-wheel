@@ -310,12 +310,12 @@ const CONFIG = {
     freeCoinsApiKey:   "YOUR_FREE_COINS_API_KEY",
   },
   wheelSegments: [
-    { label:"10 Coins",    coinImg:"coin1",   probability:30, category:2, value:10  },
-    { label:"Better Luck", coinImg:null,      probability:12, category:1, value:0   },
-    { label:"50 Coins",    coinImg:"coin50",  probability:20, category:2, value:50  },
-    { label:"200 Coins",   coinImg:"coinBig", probability:5,  category:2, value:200 },
-    { label:"100 Coins",   coinImg:"coinBig", probability:10, category:2, value:100 },
-    { label:"20 Coins",    coinImg:"coin20",  probability:23, category:2, value:20  },
+    { id:'10_coins',    label:"10 Coins",    coinImg:"coin1",   probability:25, category:2, value:10  },
+    { id:'better_luck', label:"Better Luck", coinImg:null,      probability:60, category:1, value:0   },
+    { id:'50_coins',    label:"50 Coins",    coinImg:"coin50",  probability:3,  category:2, value:50  },
+    { id:'200_coins',   label:"200 Coins",   coinImg:"coinBig", probability:1,  category:2, value:200 },
+    { id:'100_coins',   label:"100 Coins",   coinImg:"coinBig", probability:2,  category:2, value:100 },
+    { id:'20_coins',    label:"20 Coins",    coinImg:"coin20",  probability:9,  category:2, value:20  },
   ],
 };
 
@@ -398,10 +398,40 @@ function pickWinner(){
 function easeOut(t){return 1-Math.pow(1-t,5);}
 
 let mkTimer=null;
-function doSpin(){
+async function doSpin(){
   if(S.spinning||S.spins<=0)return;
   S.spinning=true; S.spins--; document.getElementById('sb').disabled=true; updateInfo();
-  const w=pickWinner();
+
+  // ── Get reward from backend ───────────────────────────────────────────────
+  let w;
+  try{
+    if(devMode){
+      w=pickWinner(); // dev mode: pick locally
+    } else {
+      const body={};
+      if(S.eazeUserId) body.eazeUserId=S.eazeUserId;
+      else body.mobileNumber=S.phone;
+      const res=await fetch('/api/spin',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const data=await res.json();
+      if(!res.ok){
+        if(data.reason==='daily_limit_reached'){
+          S.spinning=false; S.spins=0;
+          document.getElementById('sb').disabled=true;
+          startCD(); updateInfo(); return;
+        }
+        throw new Error(data.error||`Error ${res.status}`);
+      }
+      w=CONFIG.wheelSegments.findIndex(s=>s.id===data.reward.id);
+      if(w<0) w=CONFIG.wheelSegments.findIndex(s=>s.id==='better_luck');
+    }
+  } catch(e){
+    S.spinning=false; S.spins++;
+    document.getElementById('sb').disabled=false;
+    showToast('Connection error. Please try again.');
+    updateInfo(); return;
+  }
+
+  // ── Animate wheel to segment w ────────────────────────────────────────────
   const xtra=CONFIG.gameplay.baseExtraRots+Math.floor(Math.random()*CONFIG.gameplay.randExtraRots);
   const jitter=(Math.random()*2-1)*CONFIG.gameplay.landingJitter*(SEG/2);
   const localC=(w+0.5)*SEG+jitter;
@@ -534,17 +564,18 @@ async function doLogin(){
 
   btn.innerHTML='<span class="spin-ring"></span>Checking…'; btn.disabled=true;
   try{
-    const{isEazeUser,userId}=await validateEazeUser(phone);
+    const{isEazeUser,userId,state}=await validateEazeUser(phone);
     if(!isEazeUser){
       inp.classList.add('err');
       showToast('This number isn\'t registered with eaze. Please try a different number.');
       setTimeout(()=>inp.classList.remove('err'),1400);
       btn.textContent='Proceed →'; btn.disabled=false; return;
     }
-    S.userId=userId; S.phone=phone;
-    S.spins=CONFIG.gameplay.totalFreeSpins; S.bal=0; S.rot=0;
-    document.getElementById('wbal').textContent='0';
-    document.getElementById('sb').disabled=false;
+    S.userId=userId; S.phone=phone; S.rot=0;
+    S.spins=state?.can_spin?CONFIG.gameplay.totalFreeSpins:0;
+    S.bal=state?.unclaimed_coins||0;
+    document.getElementById('wbal').textContent=S.bal;
+    document.getElementById('sb').disabled=!state?.can_spin;
     show('ws'); draw(0); updateInfo();
     btn.textContent='Proceed →'; btn.disabled=false;
   } catch(e){

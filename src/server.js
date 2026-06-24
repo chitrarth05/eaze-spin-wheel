@@ -4,8 +4,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   createTransferRequest,
-  getAdminStats,
-  getAdminTableData,
   getPlayerState,
   getPublicConfig,
   registerPlayer,
@@ -46,7 +44,7 @@ async function sendSlackAlert(text) {
   } catch (_) {}
 }
 
-// ── Public routes ─────────────────────────────────────────────────────────────
+// ── Routes ────────────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'eaze-spin-wheel' });
@@ -59,17 +57,16 @@ app.get('/api/config', (_req, res) => {
 /**
  * Register / login.
  *
- * Normal login:       { mobileNumber: "9876543210" }
- *   → Redash lookup, validate user is active, create/update player row
+ * Mobile login:         POST { mobileNumber: "9876543210" }
+ *   → Redash lookup → validate active → upsert player → return player + state
  *
- * URL param auto-login: { eazeUserId: 1476 }
- *   → Skip Redash, create player with mobile_number = NULL, eaze_user_id = 1476
+ * URL param auto-login: POST { eazeUserId: 1476 }
+ *   → No Redash → upsert player (mobile_number = NULL) → return player + state
  */
 app.post('/api/players/register', async (req, res) => {
   try {
     const { eazeUserId } = req.body;
 
-    // ── URL param path ──────────────────────────────────────────────────────
     if (eazeUserId) {
       const uid = parseInt(String(eazeUserId), 10);
       if (isNaN(uid) || uid <= 0) {
@@ -80,7 +77,6 @@ app.post('/api/players/register', async (req, res) => {
       return res.status(201).json({ ...result, state });
     }
 
-    // ── Mobile number path ──────────────────────────────────────────────────
     const mobileNumber = cleanMobile(req.body.mobileNumber);
     if (mobileNumber.length !== 10) {
       return res.status(400).json({ error: 'Valid 10-digit mobile number is required' });
@@ -89,7 +85,10 @@ app.post('/api/players/register', async (req, res) => {
     const result = await registerPlayer({ mobileNumber });
 
     if (!result.player) {
-      return res.status(404).json({ error: 'Mobile number not found in eaze. Please use your registered number.', reason: result.reason });
+      return res.status(404).json({
+        error: 'Mobile number not found in eaze. Please use your registered number.',
+        reason: result.reason,
+      });
     }
     if (!result.is_active) {
       return res.status(403).json({ error: 'Your eaze account is not active.' });
@@ -135,8 +134,8 @@ app.post('/api/spin', async (req, res) => {
 
 app.post('/api/transfers', async (req, res) => {
   try {
-    const mobileNumber  = req.body.mobileNumber ? cleanMobile(req.body.mobileNumber) : null;
-    const eazeUserId    = req.body.eazeUserId   || null;
+    const mobileNumber   = req.body.mobileNumber ? cleanMobile(req.body.mobileNumber) : null;
+    const eazeUserId     = req.body.eazeUserId   || null;
     const coinsRequested = Number(req.body.coinsRequested);
 
     if (!mobileNumber && !eazeUserId) {
@@ -156,40 +155,6 @@ app.post('/api/transfers', async (req, res) => {
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
-});
-
-// ── Admin ─────────────────────────────────────────────────────────────────────
-
-function requireAdmin(req, res, next) {
-  const user = req.headers['x-admin-user'];
-  const pass = req.headers['x-admin-pass'];
-  if (user === process.env.ADMIN_USERNAME && pass === process.env.ADMIN_PASSWORD) return next();
-  res.status(401).json({ error: 'Unauthorized' });
-}
-
-app.post('/api/admin/login', (req, res) => {
-  const { username, password } = req.body;
-  if (username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
-    return res.json({ success: true });
-  }
-  res.status(401).json({ error: 'Invalid credentials' });
-});
-
-app.get('/api/admin/stats', requireAdmin, async (_req, res) => {
-  try { res.json(await getAdminStats()); }
-  catch (error) { res.status(500).json({ error: error.message }); }
-});
-
-app.get('/api/admin/data/:type', requireAdmin, async (req, res) => {
-  try {
-    const filters = { status: req.query.status, date: req.query.date, mobile: req.query.mobile };
-    res.json(await getAdminTableData(req.params.type, filters));
-  } catch (error) { res.status(500).json({ error: error.message }); }
-});
-
-app.get('/admin', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(publicDir, 'admin.html'));
 });
 
 // ── Tester reset ──────────────────────────────────────────────────────────────

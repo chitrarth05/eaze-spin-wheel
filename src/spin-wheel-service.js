@@ -9,13 +9,16 @@ const DAILY_SPIN_LIMIT = 1;
 const DEFAULT_TESTER_NUMBERS = [];
 const COUNTED_TRANSFER_STATUSES = ['submitted', 'success', 'mock_success'];
 
+// Segment definitions — used for reward lookup and getPublicConfig().
+// Actual reward probabilities are in COHORT_PROBABILITIES and DETERMINISTIC_SCHEDULE below.
+// The order here must match CONFIG.wheelSegments in the frontend (index 0–5).
 const WHEEL_SEGMENTS = [
-  { id: '10_coins',    label: '10 Coins',              coin_value: 10,  probability: 30 },
-  { id: 'better_luck', label: 'Better Luck Next Time', coin_value: 0,   probability: 12 },
-  { id: '50_coins',    label: '50 Coins',              coin_value: 50,  probability: 20 },
-  { id: '200_coins',   label: '200 Coins',             coin_value: 200, probability: 5  },
-  { id: '100_coins',   label: '100 Coins',             coin_value: 100, probability: 10 },
-  { id: '20_coins',    label: '20 Coins',              coin_value: 20,  probability: 23 },
+  { id: '10_coins',    label: '10 Coins',              coin_value: 10  },
+  { id: 'better_luck', label: 'Better Luck Next Time', coin_value: 0   },
+  { id: '50_coins',    label: '50 Coins',              coin_value: 50  },
+  { id: '200_coins',   label: '200 Coins',             coin_value: 200 },
+  { id: '100_coins',   label: '100 Coins',             coin_value: 100 },
+  { id: '20_coins',    label: '20 Coins',              coin_value: 20  },
 ];
 
 // ── Cohort reward config ──────────────────────────────────────────────────────
@@ -499,88 +502,6 @@ export async function createTransferRequest(mobileNumber, eazeUserId, coinsReque
 
     return rows[0];
   });
-}
-
-// ── Admin ─────────────────────────────────────────────────────────────────────
-
-export async function getAdminStats() {
-  const { rows: overview } = await runQuery(`
-    SELECT
-      (SELECT COUNT(*)::int FROM players) AS total_players,
-      (SELECT COUNT(*)::int FROM players
-       WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') = CURRENT_DATE AT TIME ZONE 'Asia/Kolkata') AS today_new_players,
-      (SELECT COUNT(*)::int FROM spin_events) AS total_spins,
-      (SELECT COUNT(*)::int FROM spin_events
-       WHERE spin_date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date) AS today_spins,
-      (SELECT COUNT(DISTINCT player_id)::int FROM spin_events
-       WHERE spin_date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date) AS today_active_players,
-      (SELECT COALESCE(SUM(total_coins),0)::int FROM players) AS total_coins_won,
-      (SELECT COALESCE(SUM(coins_requested),0)::int FROM transfer_requests
-       WHERE status IN ('submitted','success','mock_success')) AS total_coins_transferred,
-      (SELECT COUNT(*)::int FROM transfer_requests
-       WHERE status IN ('failed_provider','failed_not_registered')) AS total_failed_transfers,
-      (SELECT COUNT(*)::int FROM transfer_requests
-       WHERE status IN ('submitted','success','mock_success')) AS total_successful_transfers
-  `);
-
-  const { rows: dailySpins }   = await runQuery(`
-    SELECT spin_date::text AS date, COUNT(*)::int AS count
-    FROM spin_events WHERE spin_date >= CURRENT_DATE - INTERVAL '29 days'
-    GROUP BY spin_date ORDER BY spin_date
-  `);
-  const { rows: rewardsBreakdown } = await runQuery(`
-    SELECT reward_key, COUNT(*)::int AS count FROM spin_events GROUP BY reward_key
-  `);
-  const { rows: topPlayers }   = await runQuery(`
-    SELECT p.mobile_number, p.eaze_user_id, p.total_coins,
-           COALESCE((SELECT SUM(tr.coins_requested) FROM transfer_requests tr
-             WHERE tr.player_id=p.id AND tr.status IN ('submitted','success','mock_success')),0)::int AS transferred,
-           (SELECT COUNT(*)::int FROM spin_events se WHERE se.player_id=p.id) AS total_spins,
-           (SELECT MAX(spin_date)::text FROM spin_events se WHERE se.player_id=p.id) AS last_spin
-    FROM players p ORDER BY p.total_coins DESC LIMIT 20
-  `);
-
-  return { overview: overview[0], charts: { dailySpins, rewardsBreakdown }, topPlayers };
-}
-
-export async function getAdminTableData(type, filters = {}) {
-  if (type === 'players') {
-    const { rows } = await runQuery(`
-      SELECT p.id, p.mobile_number, p.eaze_user_id, p.display_name, p.total_coins,
-             COALESCE((SELECT SUM(tr.coins_requested) FROM transfer_requests tr
-               WHERE tr.player_id=p.id AND tr.status IN ('submitted','success','mock_success')),0)::int AS transferred_coins,
-             (SELECT COUNT(*)::int FROM spin_events se WHERE se.player_id=p.id) AS total_spins,
-             p.created_at AT TIME ZONE 'Asia/Kolkata' AS created_at
-      FROM players p ORDER BY p.created_at DESC LIMIT 5000
-    `);
-    return rows;
-  }
-  if (type === 'spins') {
-    const dateFilter = filters.date ? 'AND se.spin_date = $1::date' : '';
-    const params = filters.date ? [filters.date] : [];
-    const { rows } = await runQuery(`
-      SELECT se.id, p.mobile_number, p.eaze_user_id, se.reward_key, se.reward_label,
-             se.coin_value, se.spin_date, se.created_at AT TIME ZONE 'Asia/Kolkata' AS created_at
-      FROM spin_events se JOIN players p ON p.id=se.player_id
-      WHERE 1=1 ${dateFilter} ORDER BY se.created_at DESC LIMIT 10000
-    `, params);
-    return rows;
-  }
-  if (type === 'transfers') {
-    const conditions = ['1=1'], params = [];
-    if (filters.status) { params.push(filters.status); conditions.push(`tr.status = $${params.length}`); }
-    if (filters.date)   { params.push(filters.date);   conditions.push(`DATE(tr.created_at AT TIME ZONE 'Asia/Kolkata') = $${params.length}::date`); }
-    if (filters.mobile) { params.push(`%${filters.mobile}%`); conditions.push(`p.mobile_number LIKE $${params.length}`); }
-    const { rows } = await runQuery(`
-      SELECT tr.id, p.mobile_number, p.eaze_user_id, tr.coins_requested, tr.status,
-             tr.error_message, tr.notes, tr.provider_ref,
-             tr.created_at AT TIME ZONE 'Asia/Kolkata' AS created_at
-      FROM transfer_requests tr JOIN players p ON p.id=tr.player_id
-      WHERE ${conditions.join(' AND ')} ORDER BY tr.created_at DESC LIMIT 5000
-    `, params);
-    return rows;
-  }
-  return [];
 }
 
 export async function resetTestData(mobileNumber) {
