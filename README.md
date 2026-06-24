@@ -31,14 +31,27 @@ Deployed at **https://spinwheel.eazeapp.com**
 
 ## Wheel segments
 
+**Days 1–7 — deterministic (guaranteed, no Better Luck)**
+
+| Day | Reward |
+|-----|--------|
+| 1–3 | 20 coins |
+| 4 | 50 coins |
+| 5–6 | 10 coins |
+| 7 | 20 coins |
+
+**Days 8–14 — probabilistic**
+
 | Label | Probability | Coins |
 |-------|-------------|-------|
-| 10 Coins | 30% | 10 |
-| 20 Coins | 23% | 20 |
-| 50 Coins | 20% | 50 |
-| 100 Coins | 10% | 100 |
-| Better Luck | 12% | 0 |
-| 200 Coins | 5% | 200 |
+| Better Luck | 60% | 0 |
+| 10 Coins | 25% | 10 |
+| 20 Coins | 9% | 20 |
+| 50 Coins | 3% | 50 |
+| 100 Coins | 2% | 100 |
+| 200 Coins | 1% | 200 |
+
+**Day 15+** — feature not active for these users.
 
 ---
 
@@ -77,10 +90,6 @@ eaze-spin-wheel/
 | GET | `/api/players/:id/state` | Player state |
 | POST | `/api/spin` | Perform a spin |
 | POST | `/api/transfers` | Claim coins |
-| GET | `/admin` | Admin dashboard |
-| POST | `/api/admin/login` | Admin login |
-| GET | `/api/admin/stats` | Aggregate stats |
-| GET | `/api/admin/data/:type` | Table data (players / spins / transfers) |
 | POST | `/api/test/reset` | Reset tester data |
 
 ---
