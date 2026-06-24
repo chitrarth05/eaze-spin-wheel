@@ -40,14 +40,24 @@ const DETERMINISTIC_SCHEDULE = {
   7: '20_coins',
 };
 
-// Probabilities must sum to 100
-const COHORT_PROBABILITIES = [
-  { id: 'better_luck', probability: 60 },
-  { id: '10_coins',    probability: 25 },
-  { id: '20_coins',    probability:  9 },
-  { id: '50_coins',    probability:  3 },
-  { id: '100_coins',   probability:  2 },
-  { id: '200_coins',   probability:  1 },
+// Days 8–14 — tier 1. Probabilities sum to 100.
+const COHORT_PROBABILITIES_T1 = [
+  { id: 'better_luck', probability: 60    },
+  { id: '10_coins',    probability: 25    },
+  { id: '20_coins',    probability:  9    },
+  { id: '50_coins',    probability:  3    },
+  { id: '100_coins',   probability:  2    },
+  { id: '200_coins',   probability:  1    },
+];
+
+// Day 15+ — tier 2. Probabilities sum to 100.
+const COHORT_PROBABILITIES_T2 = [
+  { id: 'better_luck', probability: 65    },
+  { id: '10_coins',    probability: 24.4  },
+  { id: '20_coins',    probability:  9.5  },
+  { id: '50_coins',    probability:  1    },
+  { id: '100_coins',   probability:  0.09 },
+  { id: '200_coins',   probability:  0.01 },
 ];
 
 // ── Normalisation ─────────────────────────────────────────────────────────────
@@ -76,17 +86,22 @@ function getCountedStatusesSql(startIndex = 2) {
 
 // ── Reward determination ──────────────────────────────────────────────────────
 
+function pickFromProbabilities(probs) {
+  const roll = Math.random() * 100;
+  let cumulative = 0;
+  for (const seg of probs) {
+    cumulative += seg.probability;
+    if (roll < cumulative) return WHEEL_SEGMENTS.find((s) => s.id === seg.id);
+  }
+  return WHEEL_SEGMENTS.find((s) => s.id === 'better_luck');
+}
+
 function determineReward(dayNumber, forcedRewardId = null) {
   // Tester forced reward — always takes precedence
   if (forcedRewardId) {
     const forced = WHEEL_SEGMENTS.find((s) => s.id === forcedRewardId);
     if (!forced) throw new Error(`Unknown reward id: ${forcedRewardId}`);
     return forced;
-  }
-
-  // Day 15+ — feature not active for this user, return Better Luck gracefully
-  if (dayNumber > 14) {
-    return WHEEL_SEGMENTS.find((s) => s.id === 'better_luck');
   }
 
   // Days 1–7 — deterministic guaranteed reward
@@ -96,13 +111,10 @@ function determineReward(dayNumber, forcedRewardId = null) {
   }
 
   // Days 8–14 — probabilistic tier 1
-  const roll = Math.random() * 100;
-  let cumulative = 0;
-  for (const seg of COHORT_PROBABILITIES) {
-    cumulative += seg.probability;
-    if (roll < cumulative) return WHEEL_SEGMENTS.find((s) => s.id === seg.id);
-  }
-  return WHEEL_SEGMENTS.find((s) => s.id === 'better_luck');
+  if (dayNumber <= 14) return pickFromProbabilities(COHORT_PROBABILITIES_T1);
+
+  // Day 15+ — probabilistic tier 2
+  return pickFromProbabilities(COHORT_PROBABILITIES_T2);
 }
 
 // ── Redash user lookup ────────────────────────────────────────────────────────
