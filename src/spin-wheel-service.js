@@ -18,6 +18,35 @@ const WHEEL_SEGMENTS = [
   { id: '20_coins',    label: '20 Coins',              coin_value: 20,  probability: 23 },
 ];
 
+// ── Cohort reward config ──────────────────────────────────────────────────────
+//
+// Day number = number of distinct calendar days a player has spun (including today).
+// Computed purely from spin_events — no external calls needed.
+//
+// Days 1–7:  deterministic (guaranteed coin amount, no Better Luck)
+// Days 8–14: probabilistic tier 1
+// Day 15+:   feature not active for these users (returns Better Luck gracefully)
+
+const DETERMINISTIC_SCHEDULE = {
+  1: '20_coins',
+  2: '20_coins',
+  3: '20_coins',
+  4: '50_coins',
+  5: '10_coins',
+  6: '10_coins',
+  7: '20_coins',
+};
+
+// Probabilities must sum to 100
+const COHORT_PROBABILITIES = [
+  { id: 'better_luck', probability: 60 },
+  { id: '10_coins',    probability: 25 },
+  { id: '20_coins',    probability:  9 },
+  { id: '50_coins',    probability:  3 },
+  { id: '100_coins',   probability:  2 },
+  { id: '200_coins',   probability:  1 },
+];
+
 // ── Normalisation ─────────────────────────────────────────────────────────────
 
 function normalizeMobile(value) {
@@ -42,21 +71,35 @@ function getCountedStatusesSql(startIndex = 2) {
   return COUNTED_TRANSFER_STATUSES.map((_, i) => `$${startIndex + i}`).join(', ');
 }
 
-// ── Reward picker ─────────────────────────────────────────────────────────────
+// ── Reward determination ──────────────────────────────────────────────────────
 
-function pickReward(forcedRewardId = null) {
+function determineReward(dayNumber, forcedRewardId = null) {
+  // Tester forced reward — always takes precedence
   if (forcedRewardId) {
     const forced = WHEEL_SEGMENTS.find((s) => s.id === forcedRewardId);
     if (!forced) throw new Error(`Unknown reward id: ${forcedRewardId}`);
     return forced;
   }
+
+  // Day 15+ — feature not active for this user, return Better Luck gracefully
+  if (dayNumber > 14) {
+    return WHEEL_SEGMENTS.find((s) => s.id === 'better_luck');
+  }
+
+  // Days 1–7 — deterministic guaranteed reward
+  const deterministicId = DETERMINISTIC_SCHEDULE[dayNumber];
+  if (deterministicId) {
+    return WHEEL_SEGMENTS.find((s) => s.id === deterministicId);
+  }
+
+  // Days 8–14 — probabilistic tier 1
   const roll = Math.random() * 100;
   let cumulative = 0;
-  for (const seg of WHEEL_SEGMENTS) {
+  for (const seg of COHORT_PROBABILITIES) {
     cumulative += seg.probability;
-    if (roll < cumulative) return seg;
+    if (roll < cumulative) return WHEEL_SEGMENTS.find((s) => s.id === seg.id);
   }
-  return WHEEL_SEGMENTS[0];
+  return WHEEL_SEGMENTS.find((s) => s.id === 'better_luck');
 }
 
 // ── Redash user lookup ────────────────────────────────────────────────────────
@@ -201,6 +244,19 @@ async function getSpinsToday(client, playerId) {
     [playerId],
   );
   return rows[0].spins_today;
+}
+
+// Returns 1 on the player's first ever spin day, 2 on the second, etc.
+// Counts distinct calendar dates the player has spun, including today.
+async function getDayNumber(client, playerId) {
+  const { rows } = await client.query(
+    `SELECT COUNT(DISTINCT spin_date)::int AS completed_days
+     FROM spin_events
+     WHERE player_id = $1
+       AND spin_date < CURRENT_DATE`,
+    [playerId],
+  );
+  return rows[0].completed_days + 1;
 }
 
 async function getTransferredToday(client, playerId) {
@@ -350,7 +406,8 @@ export async function spinForPlayer(mobileNumber, eazeUserId, forcedRewardId = n
       return { status: 'error', reason: 'daily_limit_reached' };
     }
 
-    const reward = pickReward(tester ? forcedRewardId : null);
+    const dayNumber = await getDayNumber(client, player.id);
+    const reward    = determineReward(dayNumber, tester ? forcedRewardId : null);
 
     const { rows: spinRows } = await client.query(
       `INSERT INTO spin_events (player_id, reward_key, reward_label, coin_value)
@@ -372,6 +429,7 @@ export async function spinForPlayer(mobileNumber, eazeUserId, forcedRewardId = n
       status:        'ok',
       reward:        { id: reward.id, label: reward.label, coin_value: reward.coin_value, is_win: reward.coin_value > 0 },
       spin_event_id: spinRows[0].id,
+      day_number:    dayNumber,
       player: {
         id:              player.id,
         spins_used:      spinsToday + 1,
