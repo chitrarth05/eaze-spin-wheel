@@ -69,15 +69,11 @@ function normalizeMobile(value) {
   return digits;
 }
 
-function getTesterNumbers() {
-  const configured = process.env.TESTER_MOBILE_NUMBERS
-    ? process.env.TESTER_MOBILE_NUMBERS.split(',').map((v) => normalizeMobile(v.trim())).filter(Boolean)
+function isTester(eazeUserId) {
+  const ids = process.env.TESTER_USER_IDS
+    ? process.env.TESTER_USER_IDS.split(',').map((v) => v.trim()).filter(Boolean)
     : [];
-  return configured.length > 0 ? configured : DEFAULT_TESTER_NUMBERS;
-}
-
-function isTester(mobileNumber) {
-  return mobileNumber ? getTesterNumbers().includes(normalizeMobile(mobileNumber)) : false;
+  return eazeUserId ? ids.includes(String(eazeUserId)) : false;
 }
 
 function getCountedStatusesSql(startIndex = 2) {
@@ -200,7 +196,7 @@ async function uploadCoinsToEaze(eazeUserId, amount) {
   try {
     response = await fetch(apiUrl, {
       method:  'POST',
-      headers: { 'x-eaze-auth-key': authKey },
+      headers: { 'x-n8n-auth-key': authKey },
       body:    formData,
       signal:  controller.signal,
     });
@@ -303,8 +299,7 @@ async function getTransferredCoins(client, playerId) {
 export function getPublicConfig() {
   return {
     wheelSegments:       WHEEL_SEGMENTS,
-    testerMobileNumbers: getTesterNumbers(),
-    dailySpinLimit:      DAILY_SPIN_LIMIT,
+        dailySpinLimit:      DAILY_SPIN_LIMIT,
     terms: [
       'You are entitled to 1 free spin per day.',
       'Coins are credited to your eaze wallet automatically after claiming.',
@@ -336,67 +331,54 @@ export async function registerPlayer({ mobileNumber, eazeUserId }) {
   }
 
   // ── Mobile login path ──────────────────────────────────────────────────────
+  // No Redash lookup — take the number at face value and upsert the player.
+  // Most users arrive via URL param (eazeUserId); mobile login is a fallback
+  // and doesn't need validation.
   const normalized = normalizeMobile(mobileNumber);
 
-  // Resolve eaze_user_id from Redash
-  let resolvedUserId = null;
-  let isActive       = false;
-  try {
-    const lookup  = await lookupEazeUserId(normalized);
-    resolvedUserId = lookup.userId;
-    isActive       = lookup.isActive;
-    if (!resolvedUserId) {
-      return { player: null, is_active: false, reason: lookup.reason || 'not_registered' };
-    }
-  } catch (err) {
-    return { player: null, is_active: false, reason: 'lookup_failed', detail: err.message };
-  }
-
   const { rows } = await runQuery(
-    `INSERT INTO players (mobile_number, eaze_user_id)
-     VALUES ($1, $2)
+    `INSERT INTO players (mobile_number)
+     VALUES ($1)
      ON CONFLICT (mobile_number)
-     DO UPDATE SET
-       eaze_user_id = COALESCE(EXCLUDED.eaze_user_id, players.eaze_user_id),
-       updated_at   = NOW()
+     DO UPDATE SET updated_at = NOW()
      RETURNING id, mobile_number, display_name, total_coins, eaze_user_id, created_at`,
-    [normalized, resolvedUserId],
+    [normalized],
   );
-  return { player: rows[0], is_active: isActive };
+  return { player: rows[0], is_active: true };
 }
 
 export async function getPlayerState(identifier) {
   return runInTransaction(async (client) => {
-    // identifier can be mobile number or eaze_user_id
     let player;
-    const normalized = normalizeMobile(identifier);
-    if (/^\d{10}$/.test(normalized)) {
-      player = await getPlayerByMobile(client, normalized);
+    // Accept either a plain string (mobile or eaze_user_id) or a tagged object { eazeUserId }
+    if (identifier && typeof identifier === 'object' && identifier.eazeUserId) {
+      player = await getPlayerByEazeUserId(client, identifier.eazeUserId);
     } else {
-      player = await getPlayerByEazeUserId(client, identifier);
+      const normalized = normalizeMobile(identifier);
+      if (/^\d{10}$/.test(normalized)) {
+        player = await getPlayerByMobile(client, normalized);
+      } else {
+        player = await getPlayerByEazeUserId(client, identifier);
+      }
     }
     if (!player) return null;
 
-    const spinsToday      = await getSpinsToday(client, player.id);
-    const transferredToday = await getTransferredToday(client, player.id);
-    const transferredCoins = await getTransferredCoins(client, player.id);
+    const spinsToday = await getSpinsToday(client, player.id);
 
     return {
-      id:               player.id,
-      mobile_number:    player.mobile_number,
-      eaze_user_id:     player.eaze_user_id,
-      spins_used:       spinsToday,
-      max_spins:        DAILY_SPIN_LIMIT,
-      can_spin:         spinsToday < DAILY_SPIN_LIMIT,
-      total_coins_won:  Number(player.total_coins),
-      unclaimed_coins:  Math.max(0, Number(player.total_coins) - transferredCoins),
-      transferred_today: transferredToday,
+      id:              player.id,
+      mobile_number:   player.mobile_number,
+      eaze_user_id:    player.eaze_user_id,
+      spins_used:      spinsToday,
+      max_spins:       DAILY_SPIN_LIMIT,
+      can_spin:        spinsToday < DAILY_SPIN_LIMIT,
+      total_coins_won: Number(player.total_coins),
     };
   });
 }
 
 export async function spinForPlayer(mobileNumber, eazeUserId, forcedRewardId = null) {
-  const tester = isTester(mobileNumber);
+  const tester = isTester(eazeUserId);
 
   return runInTransaction(async (client) => {
     // Find or auto-create the player
@@ -436,9 +418,10 @@ export async function spinForPlayer(mobileNumber, eazeUserId, forcedRewardId = n
         [player.id, reward.coin_value],
       );
       player.total_coins = Number(player.total_coins) + reward.coin_value;
+      // Auto-fire coins API — result is logged but never blocks the spin
+      const transferStatus = await autoTransferCoins(client, player, reward.coin_value);
+      console.log(`Auto-transfer player ${player.eaze_user_id}: ${transferStatus}`);
     }
-
-    const transferredCoins = await getTransferredCoins(client, player.id);
 
     return {
       status:        'ok',
@@ -451,15 +434,37 @@ export async function spinForPlayer(mobileNumber, eazeUserId, forcedRewardId = n
         max_spins:       DAILY_SPIN_LIMIT,
         can_spin:        false,
         total_coins_won: Number(player.total_coins),
-        unclaimed_coins: Math.max(0, Number(player.total_coins) - transferredCoins),
       },
     };
   });
 }
 
+async function autoTransferCoins(client, player, amount) {
+  try {
+    const providerResult = await uploadCoinsToEaze(player.eaze_user_id, amount);
+    const status = providerResult.ok ? 'submitted' : 'failed_provider';
+    await client.query(
+      `INSERT INTO transfer_requests (player_id, coins_requested, status, notes, provider_ref)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [player.id, amount, status, providerResult.message || null, providerResult.providerRef || null],
+    );
+    return status;
+  } catch (err) {
+    // Never throw — a transfer failure must not roll back the spin
+    try {
+      await client.query(
+        `INSERT INTO transfer_requests (player_id, coins_requested, status, notes, error_message)
+         VALUES ($1, $2, 'failed_provider', 'Auto-transfer exception', $3)`,
+        [player.id, amount, err.message],
+      );
+    } catch (_) {}
+    return 'failed_provider';
+  }
+}
+
 export async function createTransferRequest(mobileNumber, eazeUserId, coinsRequested) {
   const normalized = mobileNumber ? normalizeMobile(mobileNumber) : null;
-  const tester     = isTester(normalized);
+  const tester     = isTester(eazeUserId);
 
   return runInTransaction(async (client) => {
     const player = normalized
@@ -516,12 +521,15 @@ export async function createTransferRequest(mobileNumber, eazeUserId, coinsReque
   });
 }
 
-export async function resetTestData(mobileNumber) {
-  const normalized = normalizeMobile(mobileNumber);
-  if (!isTester(normalized)) throw new Error('Reset only allowed for tester numbers');
+export async function resetTestData(eazeUserId) {
+  const uid = String(eazeUserId);
+  if (!isTester(uid)) throw new Error('Reset only allowed for tester user IDs');
 
   return runInTransaction(async (client) => {
-    const player = await getPlayerByMobile(client, normalized);
+    const { rows } = await client.query(
+      'SELECT id FROM players WHERE eaze_user_id = $1', [uid]
+    );
+    const player = rows[0] || null;
     if (!player) return { status: 'ok', message: 'No data to reset' };
     await client.query('DELETE FROM transfer_requests WHERE player_id = $1', [player.id]);
     await client.query('DELETE FROM spin_events WHERE player_id = $1', [player.id]);

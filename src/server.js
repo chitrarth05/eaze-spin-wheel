@@ -32,17 +32,6 @@ function cleanMobile(value) {
   return digits;
 }
 
-async function sendSlackAlert(text) {
-  const url = process.env.SLACK_WEBHOOK_URL;
-  if (!url) return;
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-  } catch (_) {}
-}
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
@@ -73,7 +62,7 @@ app.post('/api/players/register', async (req, res) => {
         return res.status(400).json({ error: 'Invalid eazeUserId' });
       }
       const result = await registerPlayer({ eazeUserId: uid });
-      const state  = await getPlayerState(String(uid));
+      const state  = await getPlayerState({ eazeUserId: uid });
       return res.status(201).json({ ...result, state });
     }
 
@@ -83,19 +72,8 @@ app.post('/api/players/register', async (req, res) => {
     }
 
     const result = await registerPlayer({ mobileNumber });
-
-    if (!result.player) {
-      return res.status(404).json({
-        error: 'Mobile number not found in eaze. Please use your registered number.',
-        reason: result.reason,
-      });
-    }
-    if (!result.is_active) {
-      return res.status(403).json({ error: 'Your eaze account is not active.' });
-    }
-
-    const state = await getPlayerState(mobileNumber);
-    res.status(201).json({ ...result, state });
+    const state  = await getPlayerState(mobileNumber);
+    return res.status(201).json({ ...result, state });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -161,7 +139,9 @@ app.post('/api/transfers', async (req, res) => {
 
 app.post('/api/test/reset', async (req, res) => {
   try {
-    res.json(await resetTestData(cleanMobile(req.body.mobileNumber)));
+    const eazeUserId = req.body.eazeUserId;
+    if (!eazeUserId) return res.status(400).json({ error: 'eazeUserId is required' });
+    res.json(await resetTestData(eazeUserId));
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -176,7 +156,6 @@ app.get('*', (_req, res) => {
 app.use((err, req, res, _next) => {
   const msg = `🚨 *eaze spin wheel error*\n*Route:* ${req.method} ${req.path}\n*Error:* ${err.message}`;
   console.error(msg);
-  sendSlackAlert(msg);
   res.status(500).json({ error: err.message });
 });
 

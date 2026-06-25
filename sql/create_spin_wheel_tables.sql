@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS players (
   mobile_number  TEXT         UNIQUE,          -- NULL when user arrives via URL param
   display_name   TEXT,
   total_coins    INTEGER      NOT NULL DEFAULT 0,
-  eaze_user_id   TEXT,
+  eaze_user_id   TEXT         UNIQUE,
   created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );

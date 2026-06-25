@@ -118,11 +118,6 @@ PORT=3000
 # Tester numbers (bypass spin limits for QA)
 TESTER_MOBILE_NUMBERS=9999999999,9999999998
 
-# Redash — mobile number → eaze_user_id lookup
-REDASH_BASE_URL=https://redash.eazeapp.com
-REDASH_API_KEY=
-REDASH_QUERY_ID=
-
 # Eaze Free Coins API
 EAZE_FREE_COINS_AUTH_KEY=
 EAZE_FREE_COINS_API_URL=https://api.eazeapp.com/payments/free-coins/upload/
@@ -131,19 +126,6 @@ EAZE_FREE_COINS_API_URL=https://api.eazeapp.com/payments/free-coins/upload/
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=
 
-# Slack alerts (optional)
-SLACK_WEBHOOK_URL=
-```
-
-### Redash query
-
-Create a query in Redash with this SQL, then set `REDASH_QUERY_ID` to its ID:
-
-```sql
-SELECT user_id, is_active
-FROM users
-WHERE mobile_number = '{{ mobile_number }}'
-LIMIT 1
 ```
 
 ---
