@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
+import { getDbPool } from './db.js';
 import {
   createTransferRequest,
   getPlayerState,
@@ -16,6 +18,17 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const publicDir  = path.join(__dirname, '..', 'public');
+
+// Auto-create tables on startup if they don't exist yet
+async function initDb() {
+  try {
+    const sql = fs.readFileSync(path.join(__dirname, '..', 'sql', 'create_spin_wheel_tables.sql'), 'utf8');
+    await getDbPool().query(sql);
+    console.log('DB tables ready');
+  } catch (err) {
+    console.error('DB init failed:', err.message);
+  }
+}
 
 const app  = express();
 const port = Number(process.env.PORT || 3000);
@@ -159,6 +172,8 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: err.message });
 });
 
-app.listen(port, () => {
-  console.log(`eaze spin wheel running on http://localhost:${port}`);
+initDb().then(() => {
+  app.listen(port, () => {
+    console.log(`eaze spin wheel running on http://localhost:${port}`);
+  });
 });
