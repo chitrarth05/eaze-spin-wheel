@@ -251,7 +251,9 @@ async function getPlayerByEazeUserId(client, eazeUserId) {
 async function getSpinsToday(client, playerId) {
   const { rows } = await client.query(
     `SELECT COUNT(*)::int AS spins_today
-     FROM spin_events WHERE player_id = $1 AND spin_date = CURRENT_DATE`,
+     FROM spin_events
+     WHERE player_id = $1
+       AND spin_date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
     [playerId],
   );
   return rows[0].spins_today;
@@ -264,7 +266,7 @@ async function getDayNumber(client, playerId) {
     `SELECT COUNT(DISTINCT spin_date)::int AS completed_days
      FROM spin_events
      WHERE player_id = $1
-       AND spin_date < CURRENT_DATE`,
+       AND spin_date < (NOW() AT TIME ZONE 'Asia/Kolkata')::date`,
     [playerId],
   );
   return rows[0].completed_days + 1;
@@ -407,8 +409,8 @@ export async function spinForPlayer(mobileNumber, eazeUserId, forcedRewardId = n
     const reward    = determineReward(dayNumber, tester ? forcedRewardId : null);
 
     const { rows: spinRows } = await client.query(
-      `INSERT INTO spin_events (player_id, reward_key, reward_label, coin_value)
-       VALUES ($1, $2, $3, $4) RETURNING id`,
+      `INSERT INTO spin_events (player_id, reward_key, reward_label, coin_value, spin_date)
+       VALUES ($1, $2, $3, $4, (NOW() AT TIME ZONE 'Asia/Kolkata')::date) RETURNING id`,
       [player.id, reward.id, reward.label, reward.coin_value],
     );
 
